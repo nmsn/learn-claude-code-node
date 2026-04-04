@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.pnp*
+.pnpm-store/
+*.log
+.DS_Store
+.env
+.env.local
+coverage/
+.vitest/
+.eslintcache
