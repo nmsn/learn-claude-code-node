@@ -33,5 +33,9 @@
       "eslint --fix",
       "prettier --write"
     ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.82.0",
+    "dotenv": "17.4.0"
   }
 }
