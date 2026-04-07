@@ -6,8 +6,9 @@
  * MCP Client: calls external MCP servers defined in .mcp/servers.json
  */
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import * as readline from 'readline'; // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -21,7 +22,6 @@ const MCP_CONFIG_PATH = join(WORKDIR, '.mcp', 'servers.json'); // eslint-disable
 
 const DANGEROUS_COMMANDS = ['rm -rf /', 'sudo', 'shutdown', 'reboot', '> /dev/'];
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface Tool {
   name: string;
   description: string;
@@ -52,7 +52,6 @@ function safePath(p: string): string {
   return resolved;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function runBash(command: string): string {
   if (DANGEROUS_COMMANDS.some((d) => command.includes(d))) {
     return 'Error: Dangerous command blocked';
@@ -74,7 +73,6 @@ function runBash(command: string): string {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function runRead(path: string, limit?: number): string {
   try {
     const fp = safePath(path);
@@ -88,7 +86,6 @@ function runRead(path: string, limit?: number): string {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function runWrite(path: string, content: string): string {
   try {
     const fp = safePath(path);
@@ -100,7 +97,6 @@ function runWrite(path: string, content: string): string {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function runEdit(path: string, oldText: string, newText: string): string {
   try {
     const fp = safePath(path);
@@ -113,4 +109,117 @@ function runEdit(path: string, oldText: string, newText: string): string {
   } catch (e: unknown) {
     return `Error: ${e}`;
   }
+}
+
+// =============================================================================
+// MCP Server Implementation
+// =============================================================================
+
+const LOCAL_TOOLS: Tool[] = [
+  {
+    name: 'bash',
+    description: 'Run a shell command in the current workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'read_file',
+    description: 'Read file contents.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        limit: { type: 'integer' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Write content to file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'edit_file',
+    description: 'Replace exact text in file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        old_text: { type: 'string' },
+        new_text: { type: 'string' },
+      },
+      required: ['path', 'old_text', 'new_text'],
+    },
+  },
+];
+
+function executeLocalTool(name: string, args: Record<string, unknown>): string {
+  switch (name) {
+    case 'bash':
+      return runBash(args.command as string);
+    case 'read_file':
+      return runRead(args.path as string, args.limit as number | undefined);
+    case 'write_file':
+      return runWrite(args.path as string, args.content as string);
+    case 'edit_file':
+      return runEdit(args.path as string, args.old_text as string, args.new_text as string);
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+function createMCPServer(): Server {
+  const server = new Server(
+    {
+      name: 's13-mcp-server',
+      version: '1.0.0',
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  // List tools
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return { tools: LOCAL_TOOLS };
+  });
+
+  // Call tool
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args = {} } = request.params;
+    try {
+      const result = executeLocalTool(name, args);
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${e}` }],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function startMCPServer(): Promise<void> {
+  const server = createMCPServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('MCP Server started on stdio'); // stderr for logging
 }
