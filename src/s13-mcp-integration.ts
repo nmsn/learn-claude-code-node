@@ -11,8 +11,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import * as readline from 'readline'; // eslint-disable-line @typescript-eslint/no-unused-vars
-import { stdin, stdout } from 'process'; // eslint-disable-line @typescript-eslint/no-unused-vars
+import * as readline from 'readline';
+import { stdin, stdout } from 'process';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { resolve, dirname, join, isAbsolute } from 'path';
@@ -307,10 +307,8 @@ class ClientManager {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const clientManager = new ClientManager();
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function loadServerConfigs(): ServerConfig[] {
   try {
     if (!fs.existsSync(MCP_CONFIG_PATH)) {
@@ -324,10 +322,137 @@ function loadServerConfigs(): ServerConfig[] {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function startMCPServer(): Promise<void> {
   const server = createMCPServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('MCP Server started on stdio'); // stderr for logging
 }
+
+// =============================================================================
+// REPL and Main Integration
+// =============================================================================
+
+async function main() {
+  const rl = readline.createInterface({
+    input: stdin,
+    output: stdout,
+    prompt: '\x1b[36ms13 >> \x1b[0m',
+  });
+
+  console.log('s13 MCP Integration');
+  console.log('Commands: /mcp_start, /mcp_list, /mcp_tools, /connect, /disconnect, /quit');
+  console.log('Local tools: bash, read_file, write_file, edit_file');
+
+  for await (const query of rl) {
+    const trimmed = query.trim();
+
+    if (trimmed === '/quit' || trimmed === 'q' || trimmed === 'exit') {
+      break;
+    }
+
+    if (trimmed === '/mcp_start') {
+      await startMCPServer();
+      break;
+    }
+
+    if (trimmed === '/mcp_list') {
+      const configs = loadServerConfigs();
+      console.log('Configured servers:');
+      for (const config of configs) {
+        const status = clientManager.isConnected(config.name) ? '[connected]' : '[disconnected]';
+        console.log(`  ${status} ${config.name}: ${config.command} ${config.args.join(' ')}`);
+      }
+      rl.prompt();
+      continue;
+    }
+
+    if (trimmed.startsWith('/connect ')) {
+      const serverName = trimmed.slice(9).trim();
+      const configs = loadServerConfigs();
+      const config = configs.find((c: ServerConfig) => c.name === serverName);
+      if (!config) {
+        console.log(`Server "${serverName}" not found in config`);
+      } else {
+        try {
+          await clientManager.connect(serverName, config);
+        } catch (e) {
+          console.log(`Failed to connect: ${e}`);
+        }
+      }
+      rl.prompt();
+      continue;
+    }
+
+    if (trimmed.startsWith('/disconnect ')) {
+      const serverName = trimmed.slice(12).trim();
+      await clientManager.disconnect(serverName);
+      rl.prompt();
+      continue;
+    }
+
+    if (trimmed.startsWith('/mcp_tools ')) {
+      const serverName = trimmed.slice(11).trim();
+      try {
+        const tools = await clientManager.listTools(serverName);
+        console.log(`Tools from ${serverName}:`);
+        for (const tool of tools) {
+          console.log(`  - ${tool.name}: ${tool.description || ''}`);
+        }
+      } catch (e) {
+        console.log(`Error: ${e}`);
+      }
+      rl.prompt();
+      continue;
+    }
+
+    // If query looks like a tool call, parse and execute
+    if (
+      trimmed.startsWith('bash ') ||
+      trimmed.startsWith('read_file ') ||
+      trimmed.startsWith('write_file ') ||
+      trimmed.startsWith('edit_file ')
+    ) {
+      const parts = trimmed.split(' ');
+      const tool = parts[0];
+      const args = parts.slice(1);
+
+      if (tool === 'bash') {
+        console.log(runBash(args.join(' ')));
+      } else if (tool === 'read_file') {
+        console.log(runRead(args[0] || ''));
+      } else if (tool === 'write_file' && args.length >= 2) {
+        const [path, ...contentParts] = args;
+        console.log(runWrite(path, contentParts.join(' ')));
+      } else if (tool === 'edit_file' && args.length >= 3) {
+        const [path, oldText, newText] = args;
+        console.log(runEdit(path, oldText, newText));
+      } else {
+        console.log('Invalid arguments');
+      }
+      rl.prompt();
+      continue;
+    }
+
+    console.log('Unknown command. Try /mcp_start, /mcp_list, /connect <name>, or local tools.');
+    rl.prompt();
+  }
+
+  // Cleanup
+  for (const name of clientManager.getClientNames()) {
+    await clientManager.disconnect(name);
+  }
+}
+
+process.on('SIGINT', async () => {
+  console.log('\nShutting down...');
+  for (const name of clientManager.getClientNames()) {
+    await clientManager.disconnect(name);
+  }
+  process.exit(0);
+});
+
+main().catch((e) => {
+  console.error(`Fatal error: ${e}`);
+  process.exit(1);
+});
