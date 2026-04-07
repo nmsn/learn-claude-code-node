@@ -9,8 +9,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as readline from 'readline'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import { stdin, stdout } from 'process'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import { execSync } from 'child_process';
@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import { resolve, dirname, join, isAbsolute } from 'path';
 
 const WORKDIR = process.cwd();
-const MCP_CONFIG_PATH = join(WORKDIR, '.mcp', 'servers.json'); // eslint-disable-line @typescript-eslint/no-unused-vars
+const MCP_CONFIG_PATH = join(WORKDIR, '.mcp', 'servers.json');
 
 const DANGEROUS_COMMANDS = ['rm -rf /', 'sudo', 'shutdown', 'reboot', '> /dev/'];
 
@@ -38,7 +38,6 @@ interface ServerConfig {
   args: string[];
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface ServersConfig {
   servers: ServerConfig[];
 }
@@ -214,6 +213,115 @@ function createMCPServer(): Server {
   });
 
   return server;
+}
+
+// =============================================================================
+// MCP Client Implementation
+// =============================================================================
+
+class ClientManager {
+  private clients: Map<string, Client> = new Map();
+
+  async connect(name: string, config: ServerConfig): Promise<void> {
+    if (this.clients.has(name)) {
+      console.log(`Client ${name} already connected`);
+      return;
+    }
+
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+    });
+
+    const client = new Client(
+      {
+        name: `s13-client-${name}`,
+        version: '1.0.0',
+      },
+      {
+        capabilities: {},
+      }
+    );
+
+    await client.connect(transport);
+    this.clients.set(name, client);
+    console.log(`Connected to MCP server: ${name}`);
+  }
+
+  async disconnect(name: string): Promise<void> {
+    const client = this.clients.get(name);
+    if (!client) {
+      console.log(`Client ${name} not connected`);
+      return;
+    }
+    await client.close();
+    this.clients.delete(name);
+    console.log(`Disconnected from MCP server: ${name}`);
+  }
+
+  isConnected(name: string): boolean {
+    return this.clients.has(name);
+  }
+
+  getClient(name: string): Client | undefined {
+    return this.clients.get(name);
+  }
+
+  getClientNames(): string[] {
+    return Array.from(this.clients.keys());
+  }
+
+  async listTools(name: string): Promise<Array<{ name: string; description?: string }>> {
+    const client = this.clients.get(name);
+    if (!client) {
+      throw new Error(`Client ${name} not connected`);
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const response = await (client as any).request({ method: 'tools/list' }, {});
+      return response.tools || [];
+    } catch (e) {
+      console.error(`Error listing tools: ${e}`);
+      return [];
+    }
+  }
+
+  async callTool(name: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    const client = this.clients.get(name);
+    if (!client) {
+      throw new Error(`Client ${name} not connected`);
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const response = await (client as any).request(
+        { method: 'tools/call', params: { name: toolName, arguments: args } },
+        {}
+      );
+      if (response.content && response.content.length > 0) {
+        return response.content[0].text || '';
+      }
+      return '';
+    } catch (e) {
+      return `Error: ${e}`;
+    }
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const clientManager = new ClientManager();
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function loadServerConfigs(): ServerConfig[] {
+  try {
+    if (!fs.existsSync(MCP_CONFIG_PATH)) {
+      return [];
+    }
+    const config: ServersConfig = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf-8'));
+    return config.servers || [];
+  } catch (e) {
+    console.error(`Error loading MCP config: ${e}`);
+    return [];
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
